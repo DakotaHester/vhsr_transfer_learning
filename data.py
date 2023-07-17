@@ -219,7 +219,6 @@ class LandCoverNetMulticlassDataset(Dataset):
                 if np.sum(patch == lab_class+1) / n_pixels_per_label >= 0.05:
                     patch_labels.append(lab_class)
             self.labels.append(patch_labels)
-                    
         
         # define transforms to use. these will be applied to both X and y
         if mode == 'train':
