@@ -3,12 +3,16 @@ import pandas as pd
 import segmentation_models_pytorch as smp
 import numpy as np
 from torchmetrics import classification
+import torchmetrics
 from torchmetrics.aggregation import MeanMetric
 import matplotlib.pyplot as plt
+import torch.nn as nn
+import torch
+import pickle
 
 class TrainHistory(object):
     
-    def __init__(self, n_classes, name='train_history', device='cpu'):
+    def __init__(self, n_classes, name='train_history', device='cpu', mode='multiclass', ignore_index=0):
         self._history_dict = {
             'epoch': [],
             'phase': [],
@@ -17,22 +21,32 @@ class TrainHistory(object):
             'prod_acc': [],
             'user_acc': [],
             'f1': [],
-            'iou': [],
         }
-        self._writer = SummaryWriter()
+        if mode == 'multiclass': self._history_dict['iou'] = []
+        self._writer = SummaryWriter(log_dir=f'runs/{name}')
         
         self.current_phase = 'train'
         self.current_epoch = 1
+        print(n_classes)
 
         self.best_epoch = 0
         self.best_val_loss = float('inf')
         
-        self.acc_metric = classification.MulticlassAccuracy(num_classes=n_classes).to(device)
-        self.prod_acc_metric = classification.MulticlassPrecision(num_classes=n_classes).to(device)
-        self.user_acc_metric = classification.MulticlassRecall(num_classes=n_classes).to(device)
-        self.f1_metric = classification.MulticlassF1Score(num_classes=n_classes).to(device)
-        self.iou_metric = classification.MulticlassJaccardIndex(num_classes=n_classes).to(device)
-        self.temp_loss = MeanMetric()
+        self.task = 'multiclass' if mode == 'multiclass' else 'multilabel'
+        tm_kwargs = {
+            'task': self.task,
+            'num_classes': n_classes,
+            'num_labels': n_classes,
+            'ignore_index': 0 if self.task == 'multiclass' else None,
+        }
+        print(self.task)
+        
+        self.acc_metric = torchmetrics.Accuracy(**tm_kwargs).to(device)
+        self.prod_acc_metric = torchmetrics.Precision(**tm_kwargs).to(device)
+        self.user_acc_metric = torchmetrics.Recall(**tm_kwargs).to(device)
+        self.f1_metric = torchmetrics.F1Score(**tm_kwargs).to(device)
+        if self.task == 'multiclass': self.iou_metric = torchmetrics.JaccardIndex(**tm_kwargs).to(device)
+        self.temp_loss = MeanMetric(**tm_kwargs)
     
     def _next_phase(self):
         if self.current_phase == 'train':
@@ -55,8 +69,9 @@ class TrainHistory(object):
         self._writer.add_scalar('User_acc/val', self._history_df.loc[(self.current_epoch, 'val'), 'user_acc'], self.current_epoch)
         self._writer.add_scalar('F1/train', self._history_df.loc[(self.current_epoch, 'train'), 'f1'], self.current_epoch)
         self._writer.add_scalar('F1/val', self._history_df.loc[(self.current_epoch, 'val'), 'f1'], self.current_epoch)
-        self._writer.add_scalar('IoU/train', self._history_df.loc[(self.current_epoch, 'train'), 'iou'], self.current_epoch)
-        self._writer.add_scalar('IoU/val', self._history_df.loc[(self.current_epoch, 'val'), 'iou'], self.current_epoch)
+        if self.task == 'multiclass':
+            self._writer.add_scalar('IoU/train', self._history_df.loc[(self.current_epoch, 'train'), 'iou'], self.current_epoch)
+            self._writer.add_scalar('IoU/val', self._history_df.loc[(self.current_epoch, 'val'), 'iou'], self.current_epoch)
         
     def _update_best_epoch(self):
         if self._history_df.loc[(self.current_epoch, 'val'), 'loss'] < self.best_val_loss:
@@ -66,13 +81,16 @@ class TrainHistory(object):
     def minibatch_update(self, loss, y_hat, y):
         loss = self.temp_loss.update(loss.item())
         
+        if self.task == 'multiclass': y_hat = torch.argmax(y_hat, dim=1)
+        
         acc = self.acc_metric(y_hat, y)
         pa = self.prod_acc_metric(y_hat, y)
         ua = self.user_acc_metric(y_hat, y)
         f1 = self.f1_metric(y_hat, y)
-        iou = self.iou_metric(y_hat, y)
-        
-        return loss, acc, pa, ua, f1, iou
+        if self.task == 'multiclass': 
+            iou = self.iou_metric(y_hat, y)
+            return loss, acc, pa, ua, f1, iou
+        return loss, acc, pa, ua, f1
     
     def update(self):
         loss = self.temp_loss.compute()
@@ -83,14 +101,14 @@ class TrainHistory(object):
         self._history_dict['prod_acc'].append(self.prod_acc_metric.compute().item())
         self._history_dict['user_acc'].append(self.user_acc_metric.compute().item())
         self._history_dict['f1'].append(self.f1_metric.compute().item())
-        self._history_dict['iou'].append(self.iou_metric.compute().item())
+        if self.task == 'multiclass': self._history_dict['iou'].append(self.iou_metric.compute().item())
                 
         self.temp_loss.reset()
         self.acc_metric.reset()
         self.prod_acc_metric.reset()
         self.user_acc_metric.reset()
         self.f1_metric.reset()
-        self.iou_metric.reset()
+        if self.task == 'multiclass': self.iou_metric.reset()
         
         if self.current_phase == 'val': 
             self._update_tensorboard()
@@ -121,13 +139,40 @@ class EarlyStopper:
                 return True
         return False
 
-def visualize_inference(X, y, y_hat):
-    X = X[0].cpu().numpy()
+# def visualize_inference(X, y, y_hat):
+#     X = X[0].cpu().numpy()
     
-    X_r = X[0]
-    X_g = X[1]
-    X_b = X[2]
-    X_nir = X[3]
+#     X_r = X[0]
+#     X_g = X[1]
+#     X_b = X[2]
+#     X_nir = X[3]
     
-    X_rgb = np.stack([X_r, X_g, X_b], axis=2)
-    X_
+#     X_rgb = np.stack([X_r, X_g, X_b], axis=2)
+#     X_
+
+class MultiLabelClassificationModel(nn.Module):
+    def __init__(self, encoder=None, n_classes=7):
+        super().__init__()
+        self.encoder = encoder
+        
+        # get size of output channel from encoder
+        self.encoder.eval()
+        dry_x = torch.randn(1, 4, 256, 256)
+        dry_x = self.encoder(dry_x)[-1].detach().cpu().numpy()
+        out_channels = np.prod(dry_x.shape)
+        print(out_channels, dry_x.shape)
+        self.encoder.train()
+        self.classification_head = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(out_channels, 256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, n_classes),
+            # nn.Softmax(dim=1)
+        )
+    
+    def forward(self, x):
+        x = self.encoder(x)[-1]
+        x = self.classification_head(x)
+        return x
+    

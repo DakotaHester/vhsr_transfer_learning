@@ -163,3 +163,7 @@ model_arch.gv
 resnet101_unet_LCN.csv
 model_arch.png
 runs
+resnet101_unet_multi_class_pretraining_seg_test_1_1.8121403455734253.pt
+prelim_test_1_full_seg_end_to_end_no_imagent/models
+resnet101_multilabel_lcn_pretrain_random_init/models
+prelim_test_1/

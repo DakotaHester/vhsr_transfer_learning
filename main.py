@@ -20,11 +20,12 @@ PATIENCE = 100
 SEED = 1701
 NUM_CLASSES = 8
 NAME = 'resnet101_unet_multi_class_pretraining'
+MODE = 'multilabel'
 
 torch.manual_seed(SEED)
 
 class MultiLabelClassificationModel(nn.Module):
-    def __init__(self, encoder=None, n_classes=8):
+    def __init__(self, encoder=None, n_classes=7):
         super().__init__()
         self.encoder = None
         self.classification_head = nn.Sequential(
@@ -48,8 +49,12 @@ def main() -> None:
     lcn_dataset_paths = data.get_file_paths('/scratch/lcn_global_prepped')
     lcn_train_paths, lcn_val_paths = data.split_files(lcn_dataset_paths) # default validation split of 0.2
     
-    lcn_train = data.LandCoverNetDataset(lcn_train_paths, mode='train')
-    lcn_val = data.LandCoverNetDataset(lcn_val_paths, mode='val')
+    if is_multilabel(MODE):
+        data.LandCoverNetMulticlassDataset(lcn_train_paths, mode='train')
+        data.LandCoverNetMulticlassDataset(lcn_val_paths, mode='val')
+    else:
+        lcn_train = data.LandCoverNetDataset(lcn_train_paths, mode='train')
+        lcn_val = data.LandCoverNetDataset(lcn_val_paths, mode='val')
     
     semantic_seg_autoencoder_model = smp.Unet(
         encoder_name='resnet101',
@@ -59,10 +64,13 @@ def main() -> None:
         classes=8,
     ).to(device)
     
-    encoder = semantic_seg_autoencoder_model.encoder
-    encoder_empty_weights = encoder.state_dict()
-    model = MultiLabelClassificationModel(encoder=encoder, n_classes=8).to(device)
-
+    if is_multilabel(MODE):
+        encoder = semantic_seg_autoencoder_model.encoder
+        encoder_empty_weights = encoder.state_dict()
+        model = MultiLabelClassificationModel(encoder=encoder, n_classes=8).to(device)
+    else:
+        model = semantic_seg_autoencoder_model.to(device)
+        encoder_empty_weights = model.encoder.state_dict()
     
     
     
@@ -76,10 +84,11 @@ def main() -> None:
     # model_arch = make_dot(y.mean(), params=dict(model.named_parameters())).render('model_arch', format='png')
     
     # scaler = torch.cuda.amp.GradScaler()
+
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     # loss_fn = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTHING)
-    loss_fn = smp.losses.SoftCrossEntropyLoss(smooth_factor=LABEL_SMOOTHING, ignore_index=0)
-    history = TrainHistory(n_classes=8, device=device)
+    loss_fn = torch.nn.CrossEntropyLoss(weight=lcn_train.weights, label_smoothing=LABEL_SMOOTHING, ignore_index=0 if not is_multilabel(MODE) else None)
+    history = TrainHistory(n_classes=8, device=device, mode=MODE)
     stopper = EarlyStopper(patience=PATIENCE)
     
     lcn_train_loader = torch.utils.data.DataLoader(lcn_train, batch_size=BATCH_SIZE // ACCUM_STEPS, shuffle=True, pin_memory=True)
@@ -131,6 +140,9 @@ def main() -> None:
         if history.best_epoch == epoch:
             torch.save(model.state_dict(), f'./resnet101_unet_{epoch}_{val_loss}.pt')
         history.save('resnet101_unet_LCN.csv')
+
+def is_multilabel(mode):
+    return mode == 'multilabel'
 
 if __name__ == "__main__":
     main()
