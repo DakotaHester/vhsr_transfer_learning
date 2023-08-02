@@ -346,3 +346,10 @@ def multihot_encode(x, n_classes=7):
     for i in range(n_classes):
         out[i] = i in x
     return out
+
+def get_cpblulc_filepaths(path):
+    filepaths = []
+    directories = next(os.walk(path))[1] # https://stackoverflow.com/a/142535
+    
+    for directory in directories:
+        pass
