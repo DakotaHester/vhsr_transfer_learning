@@ -20,18 +20,18 @@
 
 import os
 import data
-import segmentation_models_pytorch as smp
+# import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
-from torchinfo import summary
-from torchviz import make_dot
+# from torchinfo import summary
+# from torchviz import make_dot
 from tqdm import tqdm, trange
 from utils import TrainHistory, EarlyStopper, MultiLabelClassificationModel
 import torchvision
 import random
 import pickle
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('mps' if torch.cuda.is_available() else 'cpu')
 if device == 'cuda': torch.backends.cudnn.benchmark = True
 
 def main(args) -> None:
@@ -68,13 +68,18 @@ def main(args) -> None:
     os.mkdir(NAME, exist_ok=True)
     os.mkdir(f'{NAME}/models', exist_ok=True)
     
+    print(get_file_paths('./prelim_2_subset_data_cpblulc'))
+    exit()
+    
     for dataset in DATASETS:
         for model in MODELS:
             for encoder in ENCODERS:
                 
-                if encoder
+                input_resolution = INPUT_RESOLUTIONS[encoder]
                 
                 for loss in LOSSES:
+                    
+                    
                     if dataset == 'cpblulc':
                         pass     
                     if dataset == 'nyc':
@@ -218,6 +223,31 @@ def main(args) -> None:
         if history.best_epoch == epoch:
             torch.save(model.state_dict(), f'./{NAME}/models/{NAME}_{epoch}_{val_loss}.pt')
         history.save(f'{NAME}/{NAME}_history.csv')
+
+def get_file_paths(root_dir):
+    
+    # directory structure:
+    # | dataset
+    # | | resolution (224, 299, 600) <- root_dir (you are here)
+    # | | | sample_id <- parent_patch_id
+    # | | | | input
+    # | | | | | 00000.tif <- child_patch_id
+    # | | | | | 00001.tif
+    # | | | | | 00002.tif
+    # | | | | target
+    # | | | | | 00000.tif <-child_patch_id
+    # | | | | | 00001.tif
+    # | | | | | 00002.tif
+    filepaths = []
+    for parent_patch_id in os.listdir(root_dir):
+        for parent_patch_id in os.listdir(os.path.join(root_dir, parent_patch_id, 'input')):
+            filepaths.append(
+                (
+                    os.path.join(root_dir, parent_patch_id, 'input', parent_patch_id),
+                    os.path.join(root_dir, parent_patch_id, 'input', parent_patch_id)
+                )
+            )
+    return filepaths
 
 def argparser():
     import argparse
