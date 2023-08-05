@@ -292,21 +292,230 @@ class LandCoverNetMultilabelDataset(Dataset):
 
 class ChesapeakeBayDataset(Dataset):
     
-    def __init__(self, paths: list[tuple[str, str]], bands=[2, 3, 4], mode='train', load_from_disk=True):
+    def __init__(self, paths: list[tuple[str, str]], bands=[4, 1, 2], mode='train', load_from_disk=True, device='cpu'):
         
-        dataset_cp_array = cp.array(
-            [[rio.open(path[0]).read(band) for band in bands] for path in paths]
-        )
-        self.dataset_max = dataset_cp_array.max(axis=(0, 2, 3))
-        self.dataset_min = dataset_cp_array.min(axis=(0, 2, 3))
+        xp = cp
+        
+        print(xp)
+        
+        
+        self.dataset_paths = paths
+        self.bands = bands
+        self.mode = mode
+        self.device = device
+        self.n_classes = 6
+        
+        # self.dataset_X_xp_array = xp.array(
+        #     [[rio.open(path[0]).read(band) for band in bands] for path in paths]
+        # )
+        # print('loaded X')
+        self.dataset_y_xp_array = xp.array(
+            [rio.open(path[1]).read(1) for path in paths]
+        ) - 1 # subtract 1 to make classes 0-5 instead of 1-6
+        print('loaded y')
+        
+        # remove samples that include aberdeen proving ground (254)
+        for i in range(len(self.dataset_y_xp_array)):
+            n_removed_samples = 0
+            if np.any(self.dataset_y_xp_array[i] == 14):
+                np.delete(self.dataset_y_xp_array, i)
+                np.delete(self.dataset_paths, i)
+                n_removed_samples += 1
+        print(f'removed {n_removed_samples} samples with no data values')
+            
+        
+        self.class_weights = xp.bincount(self.dataset_y_xp_array.flatten()) / len(self.dataset_y_xp_array.flatten())
+        print('got class weights: ', self.class_weights)
+        
+        # NAIP data range [0, 255]
+        self.dataset_max = 255
+        self.dataset_min = 0
+        
+        self.class_min = 0
+        self.class_max = 5
+        
+        print('target min/max: ', self.class_min, self.class_max)
+        
         
         self.transforms = RasterSegmentationTransforms()
+        
+        # 1 - water
+        # 2 - tree canopy/forest
+        # 3 - low vegetation/field
+        # 4 - barren
+        # 5 - impervious other
+        # 6 - impervious road 
+        self.land_cover_map_colormap = ListedColormap(['aqua', 'darkgreen', 'lawngreen', 'lightyellow', 'dimgray', 'lightgray'])
+        self.land_cover_map_legend_elements = [
+            Patch(edgecolor='black', facecolor='aqua', label='Water'),
+            Patch(edgecolor='black', facecolor='darkgreen', label='Tree Canopy/Forest'),
+            Patch(edgecolor='black', facecolor='lawngreen', label='Low Vegetation/Field'),
+            Patch(edgecolor='black', facecolor='lightyellow', label='Barren'),
+            Patch(edgecolor='black', facecolor='dimgray', label='Impervious Other'),
+            Patch(edgecolor='black', facecolor='lightgray', label='Impervious Road'),
+        ]
+            
     
     def __len__(self):
-        raise NotImplementedError
+        
+        return len(self.dataset_paths)
     
     def __getitem__(self, index):
-        raise NotImplementedError
+        
+        X_np = np.array([[rio.open(self.dataset_paths[index][0]).read(band) for band in self.bands]])
+        X_tensor = torch.Tensor(X_np)
+        y_tensor = torch.Tensor(self.dataset_y_xp_array[index]).unsqueeze(0)
+        
+        X_tensor = self.standardize_raster_tensor(X_tensor)
+        if self.mode == 'train': X_tensor, y_tensor = self.transforms(X_tensor, y_tensor)
+        
+        return X_tensor, y_tensor
+    
+    def visualize(self, index):
+        
+        false_color = np.array([rio.open(self.dataset_paths[index][0]).read(band) for band in [4, 1, 2]])
+        RGB = np.array([rio.open(self.dataset_paths[index][0]).read(band) for band in [1, 2, 3]])
+        false_color = self.standardize_raster_tensor(false_color)
+        RBG = self.standardize_raster_tensor(RGB)
+        y = self.dataset_y_xp_array[index]
+        
+        if type(y) == cp.ndarray: y = cp.asnumpy(y)
+        
+        fig, axes = plt.subplots(1, 3, figsize=(10, 5))
+        axes[0].imshow(RGB.transpose(1, 2, 0), interpolation=None)
+        axes[0].set_title('RGB Image (Standardized)')
+        axes[0].axis('off')
+        axes[1].imshow(false_color.transpose(1, 2, 0), interpolation=None)
+        axes[1].set_title('False Color Image (Standardized)')
+        axes[1].axis('off')
+        axes[2].imshow(y, cmap=self.land_cover_map_colormap, interpolation=None, vmin=self.class_min, vmax=self.class_max)
+        axes[2].set_title('Ground Truth')
+        axes[2].axis('off')
+        axes[2].legend(handles=self.land_cover_map_legend_elements, bbox_to_anchor=(1.05, 0.5), loc='center left', ncol=1)
+        fig.tight_layout()
+        plt.savefig(f'test_fig_{index}.png')
+    
+    def standardize_raster_tensor(self, raster_tensor):
+        
+        # raster = cp.transpose(raster, (1, 2, 0))
+        # normalized = (raster - self.dataset_means) / self.dataset_stds
+        # standardized = (normalized - self.min_norm) / (self.max_norm - self.min_norm)
+        # return cp.transpose(standardized, (2, 0, 1))
+        
+        # no need to transpose since subtracting a scalar is commutative
+        standardized = (raster_tensor - self.dataset_min) / (self.dataset_max - self.dataset_min)
+        return standardized
+
+class NYCDataset(Dataset):
+    
+    def __init__(self, paths: list[tuple[str, str]], bands=[4, 1, 2], mode='train', load_from_disk=True, device='cpu'):
+        
+        xp = cp
+        
+        print(xp)
+        
+        
+        self.dataset_paths = paths
+        self.bands = bands
+        self.mode = mode
+        self.device = device
+        self.n_classes = 6
+        
+        # self.dataset_X_xp_array = xp.array(
+        #     [[rio.open(path[0]).read(band) for band in bands] for path in paths]
+        # )
+        # print('loaded X')
+        self.dataset_y_xp_array = xp.array(
+            [rio.open(path[1]).read(1) for path in paths]
+        ) - 1 # subtract 1 to make classes 0-5 instead of 1-6
+        print('loaded y')
+        
+        # remove samples that include aberdeen proving ground (254)
+        for i in range(len(self.dataset_y_xp_array)):
+            n_removed_samples = 0
+            if np.any(self.dataset_y_xp_array[i] == 14):
+                np.delete(self.dataset_y_xp_array, i)
+                np.delete(self.dataset_paths, i)
+                n_removed_samples += 1
+        print(f'removed {n_removed_samples} samples with no data values')
+            
+        
+        self.class_weights = xp.bincount(self.dataset_y_xp_array.flatten()) / len(self.dataset_y_xp_array.flatten())
+        print('got class weights: ', self.class_weights)
+        
+        # NAIP data range [0, 255]
+        self.dataset_max = 255
+        self.dataset_min = 0
+        
+        self.class_min = 0
+        self.class_max = 5
+        
+        print('target min/max: ', self.class_min, self.class_max)
+        
+        
+        self.transforms = RasterSegmentationTransforms()
+        
+        
+        self.land_cover_map_colormap = ListedColormap(['aqua', 'darkgreen', 'lawngreen', 'lightyellow', 'dimgray', 'lightgray'])
+        self.land_cover_map_legend_elements = [
+            Patch(edgecolor='black', facecolor='aqua', label='Water'),
+            Patch(edgecolor='black', facecolor='darkgreen', label='Tree Canopy/Forest'),
+            Patch(edgecolor='black', facecolor='lawngreen', label='Low Vegetation/Field'),
+            Patch(edgecolor='black', facecolor='lightyellow', label='Barren'),
+            Patch(edgecolor='black', facecolor='dimgray', label='Impervious Other'),
+            Patch(edgecolor='black', facecolor='lightgray', label='Impervious Road'),
+        ]
+            
+    
+    def __len__(self):
+        
+        return len(self.dataset_paths)
+    
+    def __getitem__(self, index):
+        
+        X_np = np.array([[rio.open(self.dataset_paths[index][0]).read(band) for band in self.bands]])
+        X_tensor = torch.Tensor(X_np)
+        y_tensor = torch.Tensor(self.dataset_y_xp_array[index]).unsqueeze(0)
+        
+        X_tensor = self.standardize_raster_tensor(X_tensor)
+        if self.mode == 'train': X_tensor, y_tensor = self.transforms(X_tensor, y_tensor)
+        
+        return X_tensor, y_tensor
+    
+    def visualize(self, index):
+        
+        false_color = np.array([rio.open(self.dataset_paths[index][0]).read(band) for band in [4, 1, 2]])
+        RGB = np.array([rio.open(self.dataset_paths[index][0]).read(band) for band in [1, 2, 3]])
+        false_color = self.standardize_raster_tensor(false_color)
+        RBG = self.standardize_raster_tensor(RGB)
+        y = self.dataset_y_xp_array[index]
+        
+        if type(y) == cp.ndarray: y = cp.asnumpy(y)
+        
+        fig, axes = plt.subplots(1, 3, figsize=(10, 5))
+        axes[0].imshow(RGB.transpose(1, 2, 0), interpolation=None)
+        axes[0].set_title('RGB Image (Standardized)')
+        axes[0].axis('off')
+        axes[1].imshow(false_color.transpose(1, 2, 0), interpolation=None)
+        axes[1].set_title('False Color Image (Standardized)')
+        axes[1].axis('off')
+        axes[2].imshow(y, cmap=self.land_cover_map_colormap, interpolation=None, vmin=self.class_min, vmax=self.class_max)
+        axes[2].set_title('Ground Truth')
+        axes[2].axis('off')
+        axes[2].legend(handles=self.land_cover_map_legend_elements, bbox_to_anchor=(1.05, 0.5), loc='center left', ncol=1)
+        fig.tight_layout()
+        plt.savefig(f'test_fig_{index}.png')
+    
+    def standardize_raster_tensor(self, raster_tensor):
+        
+        # raster = cp.transpose(raster, (1, 2, 0))
+        # normalized = (raster - self.dataset_means) / self.dataset_stds
+        # standardized = (normalized - self.min_norm) / (self.max_norm - self.min_norm)
+        # return cp.transpose(standardized, (2, 0, 1))
+        
+        # no need to transpose since subtracting a scalar is commutative
+        standardized = (raster_tensor - self.dataset_min) / (self.dataset_max - self.dataset_min)
+        return standardized
 
 def split_files(filepaths, val_split=0.2):
     """
