@@ -23,15 +23,18 @@ import data
 # import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
+import numpy as np
 # from torchinfo import summary
 # from torchviz import make_dot
 from tqdm import tqdm, trange
-from utils import TrainHistory, EarlyStopper, MultiLabelClassificationModel
+from utils import TrainHistory, EarlyStopper, MultiLabelClassificationModel, AccuracyMetrics
 import torchvision
 import random
 import pickle
+import segmentation_models_pytorch as smp
+import gc
 
-device = torch.device('mps' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if device == 'cuda': torch.backends.cudnn.benchmark = True
 
 def main(args) -> None:
@@ -39,14 +42,28 @@ def main(args) -> None:
     name = 'prelim2_dev_test'
     
     DATASETS = ['cpblulc', 'nyc']
+    ENCODERS = ['resnet101', 'tu-xception71', 'efficientnet-b7']
+    RESOLUTIONS = ['224', '256', '512', '1024']
     MODELS = ['unet', 'deeplabv3plus', 'pan']
-    ENCODERS = ['resnet101', 'maxception', 'efficientnet-b7']
     LOSSES = ['crossentropy', 'dice', 'focal']
     
     INPUT_RESOLUTIONS = {
         'resnet101': 224,
-        'maxception': 299,
+        'tu-xception71': 299,
         'efficientnet-b7': 600,
+    }
+    DATASET_PATHS = {
+        'cpblulc': os.path.join('/', 'scratch', 'chesapeake_bay_lulc', 'sampled'),
+        'nyc': os.path.join('/', 'scratch', 'nyc_lc', 'sampled'),
+    }
+    N_CLASSES = {
+        'cpblulc': 6,
+        'nyc': 8, # ???
+    }
+    LOSS_FNS = {
+        'crossentropy': nn.CrossEntropyLoss,
+        'dice': smp.losses.DiceLoss,
+        'focal': smp.losses.FocalLoss,
     }
     
     
@@ -57,33 +74,241 @@ def main(args) -> None:
     LABEL_SMOOTHING = args.label_smoothing
     PATIENCE = args.patience
     SEED = args.seed
+    N_SAMPLES = args.n_samples
     NUM_CLASSES = args.num_classes
     NAME = args.name
-    NUM_WORKERS = 8
+    NUM_WORKERS = 0
     # torchvision.disable_beta_transforms_warning().warnings.warn(_BETA_TRANSFORMS_WARNING) # disable warning about beta transforms
     # test loading the dataset
     
     torch.manual_seed(SEED)
+    random.seed(SEED)
     
-    os.mkdir(NAME, exist_ok=True)
-    os.mkdir(f'{NAME}/models', exist_ok=True)
-    
-    print(get_file_paths('./prelim_2_subset_data_cpblulc'))
-    exit()
+    # print(get_file_paths('./prelim_2_subset_data_cpblulc'))
+
     
     for dataset in DATASETS:
-        for model in MODELS:
-            for encoder in ENCODERS:
+        # dataset = 'nyc' # TESTING PURPOSES ONLY
+        dataset_path = DATASET_PATHS[dataset]
+        n_classes = N_CLASSES[dataset]
+        
+        for encoder_name in ENCODERS:
+            
+            for resolution in RESOLUTIONS:
+            
+                input_resolution = resolution
+                root_file_path = os.path.join(dataset_path, input_resolution)
                 
-                input_resolution = INPUT_RESOLUTIONS[encoder]
+                if dataset == 'cpblulc':
+                    data_paths = get_cpblulc_file_paths(root_file_path)
+                    print(f'found {len(data_paths)} total samples')
+                    data_paths = data.remove_nodata_samples(data_paths, nodata_value=15, n_samples=3*N_SAMPLES)
+                    subset = random.sample(data_paths, k=3*N_SAMPLES)
+                    train_paths, val_paths, test_paths = subset[:N_SAMPLES], subset[N_SAMPLES:2*N_SAMPLES], subset[2*N_SAMPLES:3*N_SAMPLES]
+                    
+                    train_dataset = data.ChesapeakeBayDataset(
+                        train_paths,
+                        mode='train',
+                        device=device,
+                    )
+                    val_dataset = data.ChesapeakeBayDataset(
+                        val_paths,
+                        mode='val',
+                        device=device,
+                    )
+                    test_dataset = data.ChesapeakeBayDataset(
+                        test_paths,
+                        mode='test',
+                        device=device,
+                    )
+                    
+                    print(train_dataset.dataset_min, train_dataset.dataset_max, train_dataset.class_weights, train_dataset.class_min, train_dataset.class_max)
+                    # for i in range(20):
+                    #     train_dataset.visualize(i)
+                    #     X = train_dataset[i]
                 
-                for loss in LOSSES:
+                elif dataset == 'nyc':
+                    data_paths = get_nyc_file_paths(root_file_path)
+                    print(f'found {len(data_paths)} total samples')
+                    data_paths = data.remove_nodata_samples(data_paths, nodata_value=15, n_samples=3*N_SAMPLES)
+                    subset = random.sample(data_paths, k=3*N_SAMPLES)
+                    train_paths, val_paths, test_paths = subset[:N_SAMPLES], subset[N_SAMPLES:2*N_SAMPLES], subset[2*N_SAMPLES:3*N_SAMPLES]
+                    
+                    train_dataset = data.NYCDataset(
+                        train_paths,
+                        mode='train',
+                        device=device,
+                    )
+                    val_dataset = data.NYCDataset(
+                        val_paths,
+                        mode='val',
+                        device=device,
+                    )
+                    test_dataset = data.NYCDataset(
+                        test_paths,
+                        mode='test',
+                        device=device,
+                    )
+                    print(train_dataset.dataset_min, train_dataset.dataset_max, train_dataset.class_weights, train_dataset.class_min, train_dataset.class_max)
+                    # for i in range(20):
+                    #     train_dataset.visualize(i)
+                    #     X = train_dataset[i]
+                                
+                for model_name in MODELS:
+                    
+                    for loss_name in LOSSES:
+                        
+                        if model_name.lower() == 'unet':
+                            
+                            # if encoder_name == 'tu-xception71' or encoder_name == 'efficientnet-b7':
+                            #     continue # skip these models for now
+                            
+                            model = smp.Unet(
+                                encoder_name=encoder_name,
+                                encoder_weights='imagenet',
+                                in_channels=3,
+                                classes=n_classes,
+                            )
+                        
+                        elif model_name.lower() == 'deeplabv3plus':
+                            
+                            model = smp.DeepLabV3Plus(
+                                encoder_name=encoder_name,
+                                encoder_weights='imagenet',
+                                in_channels=3,
+                                classes=n_classes,
+                            ) 
+                        
+                        elif model_name.lower() == 'pan':
+                                
+                            model = smp.PAN(
+                                encoder_name=encoder_name,
+                                encoder_weights='imagenet',
+                                in_channels=3,
+                                classes=n_classes,
+                            )
+                                        
+                        model.to(device)
+                        
+                        NAME = f'{dataset}_{model_name}_{encoder_name}_{loss_name}_input_resolution_{input_resolution}_n_samples_{N_SAMPLES}'
+                        if os.path.exists(f'{NAME}/{NAME}_test_metrics.csv'):
+                            print(f'{NAME} already exists, skipping...')
+                            continue
+                        os.makedirs(os.path.join(NAME, 'models'), exist_ok=True)
+                        print(NAME)
+                        
+                        with open(f'{NAME}/{NAME}_{dataset}_train.pkl', 'wb') as f:
+                            pickle.dump(train_dataset, f)
+                        with open(f'{NAME}/{NAME}_{dataset}_val.pkl', 'wb') as f:
+                            pickle.dump(val_dataset, f)
+                        with open(f'{NAME}/{NAME}_{dataset}_test.pkl', 'wb') as f:
+                            pickle.dump(test_dataset, f)
+                        
+                        if loss_name == 'crossentropy':
+                            loss_fn = nn.CrossEntropyLoss(weight=torch.Tensor(train_dataset.class_weights).to(device))
+                        elif loss_name == 'dice':
+                            loss_fn = smp.losses.DiceLoss(mode='multiclass')
+                        elif loss_name == 'focal':
+                            loss_fn = smp.losses.FocalLoss(mode='multiclass')
+                        else: raise ValueError(f'Invalid loss name {loss_name}')
+                    
+                        optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+                        history = TrainHistory(name=NAME, n_classes=n_classes, device=device, mode='multiclass')
+                        stopper = EarlyStopper(patience=PATIENCE)
+                        
+                        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE // ACCUM_STEPS, shuffle=True, pin_memory=True, num_workers=NUM_WORKERS)
+                        val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=BATCH_SIZE // ACCUM_STEPS, shuffle=True, pin_memory=True, num_workers=NUM_WORKERS)
+                        
+                        for epoch in range(1, EPOCHS+1):
+                            
+                            # train step
+                            tqdm_train_loader = tqdm(train_loader, desc=f'Epoch {epoch} train', unit='batch')
+                            model.train()
+                            for batch_idx, (X, y) in enumerate(tqdm_train_loader):
+                                X = X.to(device)
+                                y = y.to(device)
+                                # with torch.cuda.amp.autocast():
+                                #     y_hat = model(X)
+                                #     loss = loss_fn(y_hat, y) / ACCUM_STEPS
+                                
+                                y_hat = model(X)
+                                y_hat = y_hat.softmax(dim=1) # multiclass segmentation
+                                
+                                loss = loss_fn(y_hat, y) / ACCUM_STEPS
+                                history.minibatch_update(loss, y_hat, y)
+
+                                # scaler.scale(loss).backward()
+                                loss.backward()
+                                if (batch_idx + 1) % ACCUM_STEPS == 0 or (batch_idx + 1) == len(train_loader):
+                                    optimizer.step()
+                                    # scaler.step(optimizer)
+                                    # scaler.update()
+                                    optimizer.zero_grad()
+                                tqdm_train_loader.set_postfix(loss=history.temp_loss.compute().item(), f1=history.f1_metric.compute().item())
+                            
+                            history.update()
+                            
+                            # val step
+                            model.eval()
+                            tqdm_val_loader = tqdm(val_loader, unit='batch', desc=f'Epoch {epoch} val')
+                            for batch_idx, (X, y) in enumerate(tqdm_val_loader):
+                                X = X.to(device)
+                                y = y.to(device)
+                                # with torch.cuda.amp.autocast():
+                                y_hat = model(X)
+                                y_hat = y_hat.softmax(dim=1)
+                                loss = loss_fn(y_hat, y) / ACCUM_STEPS
+                                # print(X.shape, y.shape, y_hat.shape)
+                                history.minibatch_update(loss, y_hat, y)
+                                tqdm_val_loader.set_postfix(val_loss=history.temp_loss.compute().item(), val_f1=history.f1_metric.compute().item())
+                            
+                            val_loss = history.update()
+                            if stopper.early_stop(val_loss):
+                                print('Early stopping at epoch', epoch)
+                                break
+                            if history.best_epoch == epoch:
+                                torch.save(model.state_dict(), os.path.join(NAME, 'models', f'{NAME}_{epoch}_{val_loss}.pt'))
+                            history.save(f'{NAME}/{NAME}_history.csv')
+                        
+                        del train_loader, val_loader, tqdm_train_loader, tqdm_val_loader, optimizer, loss_fn, history, stopper
+                        torch.cuda.empty_cache()
+                        
+                        
+                        # eval step
+                        metrics = AccuracyMetrics(n_classes=n_classes, device=device)
+                        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False, pin_memory=False)
+                        tqdm_test_loader = tqdm(test_loader, unit='batch', desc=f'Evaluating {NAME} on test set')
+                        # sample_batch = torch.Tenso([test_dataset[i][0] for i in range(64)]).to(device)
+                        model.eval()
+                        for batch_idx, (X, y) in enumerate(tqdm_test_loader):
+                            
+                            X, y = X.to(device), y.to(device)
+                            
+                            y_hat = model(X)
+                            y_hat = y_hat.softmax(dim=1)
+        
+                            
+                            metrics.update(y_hat, y)
+                        metrics.save(f'{NAME}/{NAME}_test_metrics.csv')
+                        
+                        del test_loader, tqdm_test_loader, metrics, model
+                        torch.cuda.empty_cache()
+                        gc.collect()
                     
                     
-                    if dataset == 'cpblulc':
-                        pass     
-                    if dataset == 'nyc':
-                        pass
+                        
+                        
+                    
+                
+            #     for losses in LOSSES:
+                    
+            #         exit()
+        
+        
+    
+    exit()
+                    
+                    
     
     
     
@@ -91,7 +316,7 @@ def main(args) -> None:
     print(is_multilabel)
     n_classes = 7 if is_multilabel else 8
     
-    lcn_dataset_paths = data.get_file_paths('/scratch/lcn_global_prepped')
+    dataset_paths = data.get_file_paths('/scratch/lcn_global_prepped')
     lcn_train_paths, lcn_val_paths = data.split_files(lcn_dataset_paths) # default validation split of 0.2
     
     if args.use_val_set:
@@ -224,7 +449,7 @@ def main(args) -> None:
             torch.save(model.state_dict(), f'./{NAME}/models/{NAME}_{epoch}_{val_loss}.pt')
         history.save(f'{NAME}/{NAME}_history.csv')
 
-def get_file_paths(root_dir):
+def get_cpblulc_file_paths(root_dir: str) -> list[tuple[str, str]]:
     
     # directory structure:
     # | dataset
@@ -240,21 +465,71 @@ def get_file_paths(root_dir):
     # | | | | | 00002.tif
     filepaths = []
     for parent_patch_id in os.listdir(root_dir):
-        for parent_patch_id in os.listdir(os.path.join(root_dir, parent_patch_id, 'input')):
+        for child_patch_id in os.listdir(os.path.join(root_dir, parent_patch_id, 'input')):
+            if not child_patch_id.endswith('.tif'): continue
             filepaths.append(
                 (
-                    os.path.join(root_dir, parent_patch_id, 'input', parent_patch_id),
-                    os.path.join(root_dir, parent_patch_id, 'input', parent_patch_id)
+                    os.path.join(root_dir, parent_patch_id, 'input', child_patch_id),
+                    os.path.join(root_dir, parent_patch_id, 'target', child_patch_id)
                 )
             )
     return filepaths
+
+def get_nyc_file_paths(root_dir: str) -> list[tuple[str, str]]:
+    
+    # directory structure:
+    # | dataset
+    # | | resolution (224, 299, 600) <- root_dir (you are here)
+    # | | |  input
+    # | | | | 00000.tif <- child_patch_id
+    # | | | | 00001.tif
+    # | | | | 00002.tif
+    # | | | target
+    # | | | | 00000.tif <-child_patch_id
+    # | | | | 00001.tif
+    # | | | | 00002.tif
+    filepaths = []
+    for child_patch_id in os.listdir(os.path.join(root_dir, 'sampled', 'input')):
+        if not child_patch_id.endswith('.tif'): continue
+        filepaths.append(
+            (
+                os.path.join(root_dir, 'sampled', 'input', child_patch_id),
+                os.path.join(root_dir, 'sampled', 'target', child_patch_id)
+            )
+        )
+    return filepaths
+
+def load_dataset(
+    filepaths: list[tuple[str, str]], 
+    bands: list[int]=[4, 1, 2], 
+    n_samples: int=0, 
+    nodata_value: int=15
+) -> np.ndarray:
+    
+    if n_samples == 0: n_samples = len(filepaths) # if n_samples == 0 load all samples
+    random.shuffle(filepaths) # shuffle filepaths
+    
+    dataset = np.array([])
+    for filepath in filepaths:
+        
+        if not os.path.exists(filepath[0]): raise FileNotFoundError(f'Input file {filepath[0]} does not exist')
+        if not os.path.exists(filepath[1]): raise FileNotFoundError(f'Target file {filepath[1]} does not exist')
+        
+        X = rio.open(filepath[0]).read(bands)
+        if np.any(X == nodata_value): continue
+        
+        y = rio.open(filepath[1]).read(1)
+        dataset.append(np.array([X, y]))
+        
+        if len(dataset) == n_samples: break
+    return dataset
 
 def argparser():
     import argparse
     
     parser = argparse.ArgumentParser(description='Train a semantic segmentation model on the LandCoverNet dataset')
-    parser.add_argument('--epochs', type=int, default=1000, help='number of epochs to train for')
-    parser.add_argument('--batch_size', type=int, default=128, help='batch size')
+    parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train for')
+    parser.add_argument('--batch_size', type=int, default=8, help='batch size')
     parser.add_argument('--accum_steps', type=int, default=1, help='number of gradient accumulation steps')
     parser.add_argument('--learning_rate', type=float, default=1e-3, help='learning rate')
     parser.add_argument('--label_smoothing', type=float, default=0.1, help='label smoothing')
@@ -267,7 +542,7 @@ def argparser():
     parser.add_argument('--encoder_params', type=str, default=None, help='path to encoder parameters')
     parser.add_argument('--imagenet', dest='use_imagenet', action='store_true', help='use imagenet pretrained weights in encoder')
     parser.add_argument('--use_val_set', dest='use_val_set', action='store_true', help='use the validation set for training')
-    parser.add_argument('--n_samples', type=int, default=None, help='number of samples to use from the dataset')
+    parser.add_argument('--n_samples', type=int, default=100, help='number of samples to use from the dataset')
 
     args = parser.parse_args()
     return args
