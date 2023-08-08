@@ -118,7 +118,7 @@ def main():
             with open(f'./{NAME}/model.pkl', 'wb') as f:
                 pickle.dump(opt, f)
                 
-            xgb.plot_importance(opt.best_estimator_.named_steps['xgb'])
+            # xgb.plot_importance(opt.best_estimator_.named_steps['xgb'])
             
             
 
