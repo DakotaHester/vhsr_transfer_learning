@@ -8,6 +8,9 @@ import rasterio as rio
 import os
 import random
 import pickle
+from sklearn.metrics import accuracy_score, f1_score, jaccard_score
+from sklearn.metrics import precision_score, recall_score
+import matplotlib.pyplot as plt
 
 np.random.seed(1701)
 random.seed(1701)
@@ -16,7 +19,7 @@ DATASETS = {
     'cpblulc': '/scratch/chesapeake_bay_lulc/sampled/',    
     'nyclc': '/scratch/nyc_lc/sampled/'
 }
-RESOLUTIONS = [224, 256, 512, 1024]
+RESOLUTIONS = [224]
 N_SAMPLES = 128
 BANDS = [4, 1, 2]
 
@@ -62,8 +65,10 @@ def main():
                 
                 if dataset_name == 'cpblulc': y = y - 1 # cpblulc labels are 1-8, subtract 1 to make them 0-7
                 
-                X_train, X_val, X_test = X[:N_SAMPLES], X[N_SAMPLES:2*N_SAMPLES], X[2*N_SAMPLES:3*N_SAMPLES]
-                Y_train, Y_val, Y_test = y[:N_SAMPLES], y[N_SAMPLES:2*N_SAMPLES], y[2*N_SAMPLES:3*N_SAMPLES]
+                n_points = resolution**2 * N_SAMPLES
+                
+                X_train, X_val, X_test = X[:n_points], X[n_points:2*n_points], X[2*n_points:3*n_points]
+                Y_train, Y_val, Y_test = y[:n_points], y[n_points:2*n_points], y[2*n_points:3*n_points]
             
                 with open(f'./{NAME}/X_train.pkl', 'wb') as f:
                     pickle.dump(X_train, f)
@@ -77,48 +82,87 @@ def main():
                     pickle.dump(Y_val, f)
                 with open(f'./{NAME}/Y_test.pkl', 'wb') as f:
                     pickle.dump(Y_test, f)
-            
+                    
             pipe = Pipeline([
                 ('scaler', StandardScaler()),
                 ('xgb', xgb.XGBClassifier(
                     objective='multi:softmax',
                     num_class=n_classes,
-                    verbosity=1,
+                    verbosity=2,
                     # tree_method='gpu_hist',
                     # enable_categorical=True,
+                    # n_jobs=2,
+                    # device='gpu',
+                    random_state=1701,
+                    early_stopping_rounds=5,
+                    tree_method='gpu_hist',
+                    gpu_id=0,
+                    predictor='gpu_predictor',
                 ))
             ])
+            
+            # following params found using bayeesian optimization
+            params = dict([('xgb__colsample_bytree', 1.0), ('xgb__gamma', 0.01), ('xgb__grow_policy', 'lossguide'), ('xgb__learning_rate', 0.18695810922200368), ('xgb__max_depth', 5), ('xgb__min_child_weight', 4), ('xgb__n_estimators', 1000), ('xgb__reg_alpha', 0.8596388382402865), ('xgb__reg_lambda', 0.2093415313907045), ('xgb__subsample', 0.8219059071873525)])
+            pipe.set_params(**params)
 
-            param_grid = {
-                'xgb__n_estimators': Integer(100, 1000),
-                'xgb__max_depth': Integer(3, 10),
-                'xgb__grow_policy': Categorical(['depthwise', 'lossguide']),
-                'xgb__learning_rate': Real(0.01, 0.5),
-                'xgb__subsample': Real(0.5, 1.0),
-                'xgb__colsample_bytree': Real(0.5, 1.0),
-                'xgb__gamma': Real(0.01, 1.0),
-                'xgb__min_child_weight': Integer(1, 10),
-                'xgb__reg_alpha': Real(0.01, 1.0),
-                'xgb__reg_lambda': Real(0.01, 1.0),
-                # 'xgb__scale_pos_weight': Real(1, 10),
-            }
+            # param_grid = {
+            #     'xgb__n_estimators': Integer(100, 1000),
+            #     'xgb__max_depth': Integer(3, 10),
+            #     'xgb__grow_policy': Categorical(['depthwise', 'lossguide']),
+            #     'xgb__learning_rate': Real(0.01, 0.5),
+            #     'xgb__subsample': Real(0.5, 1.0),
+            #     'xgb__colsample_bytree': Real(0.5, 1.0),
+            #     'xgb__gamma': Real(0.01, 1.0),
+            #     'xgb__min_child_weight': Integer(1, 10),
+            #     'xgb__reg_alpha': Real(0.01, 1.0),
+            #     'xgb__reg_lambda': Real(0.01, 1.0),
+            #     # 'xgb__eval_set': [(X_val, Y_val)],
+            #     # 'xgb__scale_pos_weight': Real(1, 10),
+            # }
             
-            opt = BayesSearchCV(
-                pipe,
-                param_grid,
-                verbose=1,
-                n_jobs=1
-            )
+            print(X_train.shape, Y_train.shape, X_val.shape, Y_val.shape, X_test.shape, Y_test.shape)
             
-            _ = opt.fit(X_train, Y_train)
-            print(NAME)
-            print(opt.score(X_val, Y_val))
-            print(opt.score(X_test, Y_test))
-            print(opt.best_params_)
-            with open(f'./{NAME}/model.pkl', 'wb') as f:
-                pickle.dump(opt, f)
+            if False: pass
+            # if os.path.exists(f'./{NAME}/model.pkl'):
+            #     pass
+                # with open(f'./{NAME}/model.pkl', 'rb') as f:
+                    # opt = pickle.load(f)
+            else:
+            
+                # opt = BayesSearchCV(
+                #     pipe,
+                #     param_grid,
+                #     verbose=1,
+                #     n_jobs=5,
+                #     n_points=10,
+                #     n_iter=50,
+                # )
                 
-            # xgb.plot_importance(opt.best_estimator_.named_steps['xgb'])
+                # _ = opt.fit(X_train, Y_train, xgb__eval_set=[(X_val, Y_val)])
+                # print(NAME)
+                # print(opt.score(X_val, Y_val))
+                # print(opt.score(X_test, Y_test))
+                # print(opt.best_params_)
+                # with open(f'./{NAME}/model.pkl', 'wb') as f:
+                #     pickle.dump(opt, f)
+                _ = pipe.fit(X_train, Y_train, xgb__eval_set=[(X_val, Y_val)])
+                print(NAME)
+                print(pipe.score(X_val, Y_val))
+                print(pipe.score(X_test, Y_test))
+                # print(pipe.best_params_)
+                with open(f'./{NAME}/model.pkl', 'wb') as f:
+                    pickle.dump(pipe, f)
+            
+            y_test_preds = pipe.predict(X_test)
+            print(y_test_preds.shape, X_test.shape)
+            
+            
+            xgb.plot_importance(pipe['xgb'])
+            plt.savefig(f'./{NAME}/feature_importance.png')
+            plt.close()
+            xgb.plot_tree(pipe['xgb'])
+            plt.savefig(f'./{NAME}/tree.png')
+            plt.close()
             
             
 

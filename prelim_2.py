@@ -43,7 +43,7 @@ def main(args) -> None:
     
     DATASETS = ['cpblulc', 'nyc']
     ENCODERS = ['resnet101', 'tu-xception71', 'efficientnet-b7']
-    RESOLUTIONS = ['224', '256', '512', '1024']
+    RESOLUTIONS = ['512']
     MODELS = ['unet', 'deeplabv3plus', 'pan']
     LOSSES = ['crossentropy', 'dice', 'focal']
     
@@ -88,7 +88,7 @@ def main(args) -> None:
 
     
     for dataset in DATASETS:
-        # dataset = 'nyc' # TESTING PURPOSES ONLY
+        dataset = 'nyc' # TESTING PURPOSES ONLY
         dataset_path = DATASET_PATHS[dataset]
         n_classes = N_CLASSES[dataset]
         
@@ -96,60 +96,7 @@ def main(args) -> None:
             
             for resolution in RESOLUTIONS:
             
-                input_resolution = resolution
-                root_file_path = os.path.join(dataset_path, input_resolution)
-                
-                if dataset == 'cpblulc':
-                    data_paths = get_cpblulc_file_paths(root_file_path)
-                    print(f'found {len(data_paths)} total samples')
-                    data_paths = data.remove_nodata_samples(data_paths, nodata_value=15, n_samples=3*N_SAMPLES)
-                    subset = random.sample(data_paths, k=3*N_SAMPLES)
-                    train_paths, val_paths, test_paths = subset[:N_SAMPLES], subset[N_SAMPLES:2*N_SAMPLES], subset[2*N_SAMPLES:3*N_SAMPLES]
-                    
-                    train_dataset = data.ChesapeakeBayDataset(
-                        train_paths,
-                        mode='train',
-                        device=device,
-                    )
-                    val_dataset = data.ChesapeakeBayDataset(
-                        val_paths,
-                        mode='val',
-                        device=device,
-                    )
-                    test_dataset = data.ChesapeakeBayDataset(
-                        test_paths,
-                        mode='test',
-                        device=device,
-                    )
-                    
-                    print(train_dataset.dataset_min, train_dataset.dataset_max, train_dataset.class_weights, train_dataset.class_min, train_dataset.class_max)
-                    # for i in range(20):
-                    #     train_dataset.visualize(i)
-                    #     X = train_dataset[i]
-                
-                elif dataset == 'nyc':
-                    data_paths = get_nyc_file_paths(root_file_path)
-                    print(f'found {len(data_paths)} total samples')
-                    data_paths = data.remove_nodata_samples(data_paths, nodata_value=15, n_samples=3*N_SAMPLES)
-                    subset = random.sample(data_paths, k=3*N_SAMPLES)
-                    train_paths, val_paths, test_paths = subset[:N_SAMPLES], subset[N_SAMPLES:2*N_SAMPLES], subset[2*N_SAMPLES:3*N_SAMPLES]
-                    
-                    train_dataset = data.NYCDataset(
-                        train_paths,
-                        mode='train',
-                        device=device,
-                    )
-                    val_dataset = data.NYCDataset(
-                        val_paths,
-                        mode='val',
-                        device=device,
-                    )
-                    test_dataset = data.NYCDataset(
-                        test_paths,
-                        mode='test',
-                        device=device,
-                    )
-                    print(train_dataset.dataset_min, train_dataset.dataset_max, train_dataset.class_weights, train_dataset.class_min, train_dataset.class_max)
+               
                     # for i in range(20):
                     #     train_dataset.visualize(i)
                     #     X = train_dataset[i]
@@ -157,6 +104,71 @@ def main(args) -> None:
                 for model_name in MODELS:
                     
                     for loss_name in LOSSES:
+                        
+                        input_resolution = resolution
+                        root_file_path = os.path.join(dataset_path, input_resolution)
+                        
+                        NAME = f'{dataset}_{model_name}_{encoder_name}_{loss_name}_input_resolution_{input_resolution}_n_samples_{N_SAMPLES}'
+                        if os.path.exists(f'{NAME}/{NAME}_test_metrics.csv'):
+                            print(f'{NAME} already exists, skipping...')
+                            continue
+                        os.makedirs(os.path.join(NAME, 'models'), exist_ok=True)
+                        print(NAME)
+                        
+                        if dataset == 'cpblulc':
+                            data_paths = get_cpblulc_file_paths(root_file_path)
+                            print(f'found {len(data_paths)} total samples')
+                            data_paths = data.remove_nodata_samples(data_paths, nodata_value=15, n_samples=3*N_SAMPLES)
+                            subset = random.sample(data_paths, k=3*N_SAMPLES)
+                            train_paths, val_paths, test_paths = subset[:N_SAMPLES], subset[N_SAMPLES:2*N_SAMPLES], subset[2*N_SAMPLES:3*N_SAMPLES]
+                            
+                            train_dataset = data.ChesapeakeBayDataset(
+                                train_paths,
+                                mode='train',
+                                device=device,
+                            )
+                            
+                            val_dataset = data.ChesapeakeBayDataset(
+                                val_paths,
+                                mode='val',
+                                device=device,
+                            )
+                            test_dataset = data.ChesapeakeBayDataset(
+                                test_paths,
+                                mode='test',
+                                device=device,
+                            )
+                            
+                            print(train_dataset.dataset_min, train_dataset.dataset_max, train_dataset.class_weights, train_dataset.class_min, train_dataset.class_max)
+                        
+                        elif dataset == 'nyc':
+                            data_paths = get_nyc_file_paths(root_file_path)
+                            print(f'found {len(data_paths)} total samples')
+                            data_paths = data.remove_nodata_samples(data_paths, nodata_value=15, n_samples=3*N_SAMPLES)
+                            subset = random.sample(data_paths, k=3*N_SAMPLES)
+                            train_paths, val_paths, test_paths = subset[:N_SAMPLES], subset[N_SAMPLES:2*N_SAMPLES], subset[2*N_SAMPLES:3*N_SAMPLES]
+                            
+                            train_dataset = data.NYCDataset(
+                                train_paths,
+                                mode='train',
+                                device=device,
+                            )
+                            val_dataset = data.NYCDataset(
+                                val_paths,
+                                mode='val',
+                                device=device,
+                            )
+                            test_dataset = data.NYCDataset(
+                                test_paths,
+                                mode='test',
+                                device=device,
+                            )
+                            print(train_dataset.dataset_min, train_dataset.dataset_max, train_dataset.class_weights, train_dataset.class_min, train_dataset.class_max)
+                        
+                        for i in range(5):
+                            train_dataset.visualize(i)
+                            # X = train_dataset[i]
+                        
                         
                         if model_name.lower() == 'unet':
                             
@@ -190,12 +202,6 @@ def main(args) -> None:
                                         
                         model.to(device)
                         
-                        NAME = f'{dataset}_{model_name}_{encoder_name}_{loss_name}_input_resolution_{input_resolution}_n_samples_{N_SAMPLES}'
-                        if os.path.exists(f'{NAME}/{NAME}_test_metrics.csv'):
-                            print(f'{NAME} already exists, skipping...')
-                            continue
-                        os.makedirs(os.path.join(NAME, 'models'), exist_ok=True)
-                        print(NAME)
                         
                         with open(f'{NAME}/{NAME}_{dataset}_train.pkl', 'wb') as f:
                             pickle.dump(train_dataset, f)
