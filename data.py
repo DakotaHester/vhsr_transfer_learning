@@ -314,14 +314,14 @@ class ChesapeakeBayDataset(Dataset):
         ) - 1 # subtract 1 to make classes 0-5 instead of 1-6
         print('loaded y')
         
-        # remove samples that include aberdeen proving ground (254)
-        for i in range(len(self.dataset_y_xp_array)):
-            n_removed_samples = 0
-            if np.any(self.dataset_y_xp_array[i] == 14):
-                np.delete(self.dataset_y_xp_array, i)
-                np.delete(self.dataset_paths, i)
-                n_removed_samples += 1
-        print(f'removed {n_removed_samples} samples with no data values')
+        # # remove samples that include aberdeen proving ground (254)
+        # for i in range(len(self.dataset_y_xp_array)):
+        #     n_removed_samples = 0
+        #     if np.any(self.dataset_y_xp_array[i] == 14):
+        #         np.delete(self.dataset_y_xp_array, i)
+        #         np.delete(self.dataset_paths, i)
+        #         n_removed_samples += 1
+        # print(f'removed {n_removed_samples} samples with no data values')
             
         
         self.class_weights = xp.bincount(self.dataset_y_xp_array.flatten()) / len(self.dataset_y_xp_array.flatten())
@@ -369,6 +369,9 @@ class ChesapeakeBayDataset(Dataset):
         X_tensor = self.standardize_raster_tensor(X_tensor)
         if self.mode == 'train': X_tensor, y_tensor = self.transforms(X_tensor, y_tensor)
         
+        X_tensor = X_tensor.squeeze(0)
+        y_tensor = y_tensor.squeeze(0).long()
+        
         return X_tensor, y_tensor
     
     def visualize(self, index):
@@ -376,7 +379,7 @@ class ChesapeakeBayDataset(Dataset):
         false_color = np.array([rio.open(self.dataset_paths[index][0]).read(band) for band in [4, 1, 2]])
         RGB = np.array([rio.open(self.dataset_paths[index][0]).read(band) for band in [1, 2, 3]])
         false_color = self.standardize_raster_tensor(false_color)
-        RBG = self.standardize_raster_tensor(RGB)
+        RGB = self.standardize_raster_tensor(RGB)
         y = self.dataset_y_xp_array[index]
         
         if type(y) == cp.ndarray: y = cp.asnumpy(y)
@@ -393,7 +396,8 @@ class ChesapeakeBayDataset(Dataset):
         axes[2].axis('off')
         axes[2].legend(handles=self.land_cover_map_legend_elements, bbox_to_anchor=(1.05, 0.5), loc='center left', ncol=1)
         fig.tight_layout()
-        plt.savefig(f'test_fig_{index}.png')
+        plt.savefig(f'test_fig_CPB_{index}.png')
+        plt.close()
     
     def standardize_raster_tensor(self, raster_tensor):
         
@@ -410,7 +414,7 @@ class NYCDataset(Dataset):
     
     def __init__(self, paths: list[tuple[str, str]], bands=[4, 1, 2], mode='train', load_from_disk=True, device='cpu'):
         
-        xp = cp
+        xp = np
         
         print(xp)
         
@@ -419,7 +423,14 @@ class NYCDataset(Dataset):
         self.bands = bands
         self.mode = mode
         self.device = device
-        self.n_classes = 6
+
+        # NAIP data range [0, 255]
+        self.dataset_max = 255
+        self.dataset_min = 0
+        
+        self.class_min = 0
+        self.class_max = 7
+        self.n_classes = 8
         
         # self.dataset_X_xp_array = xp.array(
         #     [[rio.open(path[0]).read(band) for band in bands] for path in paths]
@@ -427,45 +438,57 @@ class NYCDataset(Dataset):
         # print('loaded X')
         self.dataset_y_xp_array = xp.array(
             [rio.open(path[1]).read(1) for path in paths]
-        ) - 1 # subtract 1 to make classes 0-5 instead of 1-6
-        print('loaded y')
+        )
+        # print('loaded y')
+
         
-        # remove samples that include aberdeen proving ground (254)
-        for i in range(len(self.dataset_y_xp_array)):
-            n_removed_samples = 0
-            if np.any(self.dataset_y_xp_array[i] == 14):
-                np.delete(self.dataset_y_xp_array, i)
-                np.delete(self.dataset_paths, i)
-                n_removed_samples += 1
-        print(f'removed {n_removed_samples} samples with no data values')
-            
+        # remove samples with no data values
+        # n_removed_samples = 0
+        # i = 0
+        # while i < len(self.dataset_y_xp_array):
+        #     if np.any(self.dataset_y_xp_array[i] == 15):
+        #         n_removed_samples += 1
+        #         self.dataset_y_xp_array = np.delete(self.dataset_y_xp_array, i, axis=0)
+        #         self.dataset_paths = np.delete(self.dataset_paths, i, axis=0)
+        #     else: i+=1
+        # print(len(self.dataset_y_xp_array))
+        # print(f'removed {n_removed_samples} samples with no data values')
+
+        self.class_max = self.dataset_y_xp_array.max()            
         
         self.class_weights = xp.bincount(self.dataset_y_xp_array.flatten()) / len(self.dataset_y_xp_array.flatten())
-        print('got class weights: ', self.class_weights)
+        if self.class_weights.shape[0] < self.n_classes:
+            self.class_weights = xp.pad(self.class_weights, (0, self.n_classes - self.class_weights.shape[0]), 'constant', constant_values=0)
+        # print('got class weights: ', self.class_weights)
         
-        # NAIP data range [0, 255]
-        self.dataset_max = 255
-        self.dataset_min = 0
+
         
-        self.class_min = 0
-        self.class_max = 5
-        
-        print('target min/max: ', self.class_min, self.class_max)
+        # print('target min/max: ', self.class_min, self.class_max)
         
         
         self.transforms = RasterSegmentationTransforms()
         
-        
-        self.land_cover_map_colormap = ListedColormap(['aqua', 'darkgreen', 'lawngreen', 'lightyellow', 'dimgray', 'lightgray'])
+        # 0 - tree canopy
+        # 1 - Grass\Shrubs
+        # 2 - bare soils
+        # 3 - Water
+        # 4 - buildings
+        # 5 - Roads
+        # 6 - Other impervious
+        # 7 - railroads
+        self.land_cover_map_colormap = ListedColormap(['darkgreen', 'lawngreen', 'lightyellow', 'aqua', 'dimgray', 'lightgray', 'black', 'brown'])
         self.land_cover_map_legend_elements = [
+            Patch(edgecolor='black', facecolor='darkgreen', label='Tree Canopy'),
+            Patch(edgecolor='black', facecolor='lawngreen', label='Grass/Shrubs'),
+            Patch(edgecolor='black', facecolor='lightyellow', label='Bare Soils'),
             Patch(edgecolor='black', facecolor='aqua', label='Water'),
-            Patch(edgecolor='black', facecolor='darkgreen', label='Tree Canopy/Forest'),
-            Patch(edgecolor='black', facecolor='lawngreen', label='Low Vegetation/Field'),
-            Patch(edgecolor='black', facecolor='lightyellow', label='Barren'),
-            Patch(edgecolor='black', facecolor='dimgray', label='Impervious Other'),
-            Patch(edgecolor='black', facecolor='lightgray', label='Impervious Road'),
+            Patch(edgecolor='black', facecolor='dimgray', label='Buildings'),
+            Patch(edgecolor='black', facecolor='lightgray', label='Roads'),
+            Patch(edgecolor='black', facecolor='black', label='Other Impervious'),
+            Patch(edgecolor='black', facecolor='brown', label='Railroads'),
         ]
-            
+        
+
     
     def __len__(self):
         
@@ -479,7 +502,8 @@ class NYCDataset(Dataset):
         
         X_tensor = self.standardize_raster_tensor(X_tensor)
         if self.mode == 'train': X_tensor, y_tensor = self.transforms(X_tensor, y_tensor)
-        
+        X_tensor = X_tensor.squeeze(0)
+        y_tensor = y_tensor.squeeze(0).long()
         return X_tensor, y_tensor
     
     def visualize(self, index):
@@ -487,7 +511,7 @@ class NYCDataset(Dataset):
         false_color = np.array([rio.open(self.dataset_paths[index][0]).read(band) for band in [4, 1, 2]])
         RGB = np.array([rio.open(self.dataset_paths[index][0]).read(band) for band in [1, 2, 3]])
         false_color = self.standardize_raster_tensor(false_color)
-        RBG = self.standardize_raster_tensor(RGB)
+        RGB = self.standardize_raster_tensor(RGB)
         y = self.dataset_y_xp_array[index]
         
         if type(y) == cp.ndarray: y = cp.asnumpy(y)
@@ -504,7 +528,8 @@ class NYCDataset(Dataset):
         axes[2].axis('off')
         axes[2].legend(handles=self.land_cover_map_legend_elements, bbox_to_anchor=(1.05, 0.5), loc='center left', ncol=1)
         fig.tight_layout()
-        plt.savefig(f'test_fig_{index}.png')
+        plt.savefig(f'test_fig_NYC_{index}.png')
+        plt.close()
     
     def standardize_raster_tensor(self, raster_tensor):
         
@@ -562,3 +587,18 @@ def get_cpblulc_filepaths(path):
     
     for directory in directories:
         pass
+
+def remove_nodata_samples(filepaths: list[tuple[str, str]], nodata_value=15, n_samples=0):
+    if n_samples == 0: n_samples = len(filepaths)
+    random.shuffle(filepaths)
+    i = 0
+    removed_samples = 0
+    clean_filepaths = []
+    while len(clean_filepaths) < n_samples and i < len(filepaths):
+        print(filepaths[i][1])
+        if np.any(rio.open(filepaths[i][1]).read(1) == nodata_value):
+            removed_samples += 1
+        else:
+            clean_filepaths.append(filepaths[i])
+        i+=1
+    return clean_filepaths

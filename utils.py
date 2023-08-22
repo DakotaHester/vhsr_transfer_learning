@@ -27,7 +27,7 @@ class TrainHistory(object):
         
         self.current_phase = 'train'
         self.current_epoch = 1
-        print(n_classes)
+        # print(n_classes)
 
         self.best_epoch = 0
         self.best_val_loss = float('inf')
@@ -37,9 +37,10 @@ class TrainHistory(object):
             'task': self.task,
             'num_classes': n_classes,
             'num_labels': n_classes,
-            'ignore_index': 0 if self.task == 'multiclass' else None,
+            # 'ignore_index': 0 if self.task == 'multiclass' else None,
+            'average': 'macro',
         }
-        print(self.task)
+        # print(self.task)
         
         self.acc_metric = torchmetrics.Accuracy(**tm_kwargs).to(device)
         self.prod_acc_metric = torchmetrics.Precision(**tm_kwargs).to(device)
@@ -93,7 +94,7 @@ class TrainHistory(object):
         return loss, acc, pa, ua, f1
     
     def update(self):
-        loss = self.temp_loss.compute()
+        loss = self.temp_loss.compute().item()
         self._history_dict['epoch'].append(self.current_epoch)
         self._history_dict['phase'].append(self.current_phase)
         self._history_dict['loss'].append(loss)
@@ -175,4 +176,85 @@ class MultiLabelClassificationModel(nn.Module):
         x = self.encoder(x)[-1]
         x = self.classification_head(x)
         return x
+
+class AccuracyMetrics:
     
+    def __init__(self, n_classes, device) -> None:
+        
+        tm_kwargs = {
+            'task': 'multiclass',
+            'num_classes': n_classes,
+            'average': 'macro',
+        }
+        
+        self.acc_metric = torchmetrics.Accuracy(**tm_kwargs).to(device)
+        self.prod_acc_metric = torchmetrics.Precision(**tm_kwargs).to(device)
+        self.user_acc_metric = torchmetrics.Recall(**tm_kwargs).to(device)
+        self.f1_metric = torchmetrics.F1Score(**tm_kwargs).to(device)
+        self.iou_metric = torchmetrics.JaccardIndex(**tm_kwargs).to(device)
+    
+    def update(self, y_hat, y):
+        
+        y_hat = torch.argmax(y_hat, dim=1)
+        
+        acc = self.acc_metric(y_hat, y)
+        pa = self.prod_acc_metric(y_hat, y)
+        ua = self.user_acc_metric(y_hat, y)
+        f1 = self.f1_metric(y_hat, y)
+        iou = self.iou_metric(y_hat, y)
+    
+    def save(self, path):
+        
+        metrics_dict = {
+            'acc': self.acc_metric.compute().item(),
+            'prod_acc': self.prod_acc_metric.compute().item(),
+            'user_acc': self.user_acc_metric.compute().item(),
+            'f1': self.f1_metric.compute().item(),
+            'iou': self.iou_metric.compute().item(),
+        }
+        metrics_df = pd.DataFrame(metrics_dict, index=[0])
+        
+        with open(path, 'wb') as f:
+            metrics_df.to_csv(f, index=False)
+        
+        
+def final_accuracy_evaluation(y_hat, y, save_dir, n_classes, device):
+    
+    y_hat = torch.argmax(y_hat, dim=1)
+    
+    tm_kwargs = {
+        'task': 'multiclass',
+        'num_classes': n_classes,
+        'num_labels': n_classes,
+    }
+    acc_metric = torchmetrics.Accuracy(**tm_kwargs).to(device)
+    prod_acc_metric = torchmetrics.Precision(**tm_kwargs).to(device)
+    user_acc_metric = torchmetrics.Recall(**tm_kwargs).to(device)
+    f1_metric = torchmetrics.F1Score(**tm_kwargs).to(device)
+    iou_metric = torchmetrics.JaccardIndex(**tm_kwargs).to(device)
+    
+    acc = acc_metric(y_hat, y)
+    pa = prod_acc_metric(y_hat, y)
+    ua = user_acc_metric(y_hat, y)
+    f1 = f1_metric(y_hat, y)
+    iou = iou_metric(y_hat, y)
+    
+    metrics_dict = {
+        'acc': acc.compute().item(),
+        'prod_acc': acc.compute().item(),
+        'user_acc': acc.compute().item(),
+        'f1': acc.compute().item(),
+        'iou': acc.compute().item(),
+    }
+    
+    metrics_dict = {
+        'acc': acc.compute().item(),
+        'prod_acc': acc.compute().item(),
+        'user_acc': acc.compute().item(),
+        'f1': acc.compute().item(),
+        'iou': acc.compute().item(),
+    }
+    
+    with open(save_dir, 'wb') as f:
+        metrics_df = pd.DataFrame(metrics_dict, index=[0])
+        metrics_df.to_csv(f, index=False)
