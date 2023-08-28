@@ -3,7 +3,7 @@ import torch.nn as nn
 import pytorch_lightning as pl
 import numpy as np
 from transformers import SegformerConfig, SegformerModel, SegformerDecodeHead, SegformerForSemanticSegmentation, SegformerFeatureExtractor, SegformerImageProcessor
-
+import torchvision
 
 # Model variant 	Depths 	        Hidden sizes 	        Decoder hidden size 	Params (M) 	ImageNet-1k Top 1
 # MiT-b0 	        [2, 2, 2, 2] 	[32, 64, 160, 256] 	    256 	                3.7 	    70.5
@@ -54,35 +54,62 @@ config = SegformerConfig(
 model = SegformerModel(config)
 decoder_head = SegformerDecodeHead(config)
 
-class SegFormer(nn.Module):
-
-    def __init__(self, num_classes=2, variant='mit-b0'):
-        
+class SegFormerEncoder(torchvision.models.vision_transformer.VisionTransformer):
+    
+    # this class adds a few extra attributes to the SegFormerEncoder class for 
+    # compatibility with the MAE class
+    
+    def __init__(self, config: SegformerConfig) -> None:
+    
         super().__init__()
         
-        # model config setup
-        self.num_classes = num_classes
-        model_config_kw_args = MODEL_CONFIGS[variant]
-        self.config = SegformerConfig(
-            num_channels=self.num_classes,
-            **model_config_kw_args,
-        )
+        self.model = SegformerModel(self.config)
         
         # important params for MAE
         self.patch_size = None
         self.seq_length = None
         self.hidden_dim = None
         
-        # encoder.pos_embedding = vit_encoder.pos_embedding
-        # encoder.dropout = vit_encoder.dropout
-        # encoder.layers = vit_encoder.layers
-        # encoder.ln = vit_encoder.ln
+        self.pos_embedding = 
+        self.dropout = self.encoder.config.classifier_dropout_prob
+        self.layers = self.encoder.
+        self.ln = 
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.encoder(x)
+        return x
+    
+
+class SegFormer(nn.Module):
+
+    def __init__(self, num_classes: int =2, variant: str ='mit-b0') -> None:
         
+        super().__init__()
+        
+        # model config setup
+        self.num_classes = num_classes
+        self.variant = variant.lower()
+        model_config_kw_args = MODEL_CONFIGS[self.variant]
+        self.config = SegformerConfig(
+            num_channels=self.num_classes,
+            **model_config_kw_args,
+        )
         
         self.encoder = SegformerModel(self.config)
         self.decoder = SegformerDecodeHead(self.config)
         
-    def forward(self, x):
+        # important params for MAE
+        self.patch_size = None
+        self.seq_length = None
+        self.hidden_dim = None
+        
+        self.pos_embedding = 
+        self.dropout = self.encoder.config.classifier_dropout_prob
+        self.layers = self.encoder.
+        self.ln = 
+        
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.encoder(x)
         x = self.decoder(x)
         return x
