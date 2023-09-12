@@ -362,7 +362,9 @@ class ChesapeakeBayDataset(Dataset):
     
     def __getitem__(self, index):
         
-        X_np = np.array([[rio.open(self.dataset_paths[index][0]).read(band) for band in self.bands]])
+        meta = rio.open(self.dataset_paths[index][0]).meta
+        
+        X_np = np.array(rio.open(self.dataset_paths[index][0]).read(self.bands))
         X_tensor = torch.Tensor(X_np)
         y_tensor = torch.Tensor(self.dataset_y_xp_array[index]).unsqueeze(0)
         
@@ -371,6 +373,8 @@ class ChesapeakeBayDataset(Dataset):
         
         X_tensor = X_tensor.squeeze(0)
         y_tensor = y_tensor.squeeze(0).long()
+        
+        # print(X_tensor.shape, y_tensor.shape)
         
         return X_tensor, y_tensor
     
@@ -496,6 +500,8 @@ class NYCDataset(Dataset):
     
     def __getitem__(self, index):
         
+        meta = rio.open(self.dataset_paths[index][0]).meta
+        
         X_np = np.array([[rio.open(self.dataset_paths[index][0]).read(band) for band in self.bands]])
         X_tensor = torch.Tensor(X_np)
         y_tensor = torch.Tensor(self.dataset_y_xp_array[index]).unsqueeze(0)
@@ -504,7 +510,7 @@ class NYCDataset(Dataset):
         if self.mode == 'train': X_tensor, y_tensor = self.transforms(X_tensor, y_tensor)
         X_tensor = X_tensor.squeeze(0)
         y_tensor = y_tensor.squeeze(0).long()
-        return X_tensor, y_tensor
+        return X_tensor, y_tensor, meta
     
     def visualize(self, index):
         
@@ -588,17 +594,42 @@ def get_cpblulc_filepaths(path):
     for directory in directories:
         pass
 
-def remove_nodata_samples(filepaths: list[tuple[str, str]], nodata_value=15, n_samples=0):
+def remove_nodata_samples(filepaths: list[tuple[str, str]], nodata_value=15, n_samples=0, shuffle=True):
     if n_samples == 0: n_samples = len(filepaths)
-    random.shuffle(filepaths)
+    if shuffle: random.shuffle(filepaths)
     i = 0
     removed_samples = 0
     clean_filepaths = []
     while len(clean_filepaths) < n_samples and i < len(filepaths):
-        print(filepaths[i][1])
         if np.any(rio.open(filepaths[i][1]).read(1) == nodata_value):
             removed_samples += 1
         else:
             clean_filepaths.append(filepaths[i])
         i+=1
     return clean_filepaths
+
+def get_cpblulc_file_paths(root_dir: str) -> list[tuple[str, str]]:
+    
+    # directory structure:
+    # | dataset
+    # | | resolution (224, 299, 600) <- root_dir (you are here)
+    # | | | sample_id <- parent_patch_id
+    # | | | | input
+    # | | | | | 00000.tif <- child_patch_id
+    # | | | | | 00001.tif
+    # | | | | | 00002.tif
+    # | | | | target
+    # | | | | | 00000.tif <-child_patch_id
+    # | | | | | 00001.tif
+    # | | | | | 00002.tif
+    filepaths = []
+    for parent_patch_id in os.listdir(root_dir):
+        for child_patch_id in os.listdir(os.path.join(root_dir, parent_patch_id, 'input')):
+            if not child_patch_id.endswith('.tif'): continue
+            filepaths.append(
+                (
+                    os.path.join(root_dir, parent_patch_id, 'input', child_patch_id),
+                    os.path.join(root_dir, parent_patch_id, 'target', child_patch_id)
+                )
+            )
+    return filepaths
