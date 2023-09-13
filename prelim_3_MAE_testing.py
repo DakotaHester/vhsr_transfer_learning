@@ -139,6 +139,13 @@ def from_timm_vit(
     num_layers = len(timm_vit.blocks)
     hidden_dim = timm_vit.head.out_features
     mlp_dim =  timm_vit.blocks[0].mlp.fc1.out_features
+    dropout = timm_vit.blocks[0].mlp.drop2.p
+    attention_dropout = timm_vit.blocks[0].attn.proj_drop.p
+    num_classes = timm_vit.num_classes
+    representation_size = None
+    norm_layer = nn.LayerNorm
+    
+    
     
     
     mae_backbone = masked_autoencoder.MAEBackbone(

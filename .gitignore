@@ -170,3 +170,12 @@ prelim_test_1/
 prelim_2_subset_data_cpblulc
 cpblulc_deeplabv3plus_resnet101_focal_input_resolution_1024_n_samples_128
 prelim_2_data
+CPBLULC_256_filepaths.pkl
+CPBLULC_256_finetune_samples.pkl
+CPBLULC_256_pretrain_samples.pkl
+CPBLULC_256_test_labels.pkl
+CPBLULC_256_test_samples.pkl
+CPBLULC_256_val_samples.pkl
+pretrain_dataset_10000.pkl
+datasets
+lightning_logs
