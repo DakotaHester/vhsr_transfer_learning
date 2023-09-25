@@ -1,187 +1,149 @@
-import torchvision.transforms as transforms
-from torch.utils.data import Dataset, DataLoader
 import torch
 import torch.nn as nn
+import prelim_3_utils as utils
 import timm
-import rasterio
-import os
-import matplotlib.pyplot as plt
-import torch.nn.functional as F
-from pytorch_metric_learning.losses import NTXentLoss, SelfSupervisedLoss
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from random import seed, shuffle
+import wandb
 
-def nt_xent_loss(x, temperature):
-    assert len(x.size()) == 2
+seed(1701)
 
-    # Cosine similarity
-    xcs = F.cosine_similarity(x[None,:,:], x[:,None,:], dim=-1)
-    xcs[torch.eye(x.size(0)).bool()] = float("-inf")
+EPOCHS = 10
+LEARNING_RATE = 0.0001
+LOADER_BATCH_SIZE = 32 # actual batch size = LOADER_BATCH_SIZE * GRAD_CACHE_STEPS
+GRAD_CACHE_STEPS = 8
+PATIENCE = 10
+TEMPRATURE = 0.1
+WARMUP_EPOCHS = 10
+TRAIN_SPLIT = 0.8
 
-    # Ground truth labels
-    target = torch.arange(8)
-    target[0::2] += 1
-    target[1::2] -= 1
-
-    # Standard cross-entropy loss
-    return F.cross_entropy(xcs / temperature, target, reduction="mean")
-
-# https://github.com/sthalles/SimCLR/blob/master/data_aug/contrastive_learning_dataset.py
-def get_simclr_pipeline_transform(size, s=1):
-    """Return a set of data augmentation transformations as described in the SimCLR paper."""
-    color_jitter = transforms.ColorJitter(0.8 * s, 0.8 * s, 0.8 * s, 0.2 * s)
-    
-    gaussian_kernel_size = int(0.1 * size)
-    if gaussian_kernel_size % 2 == 0: # kernel size must be odd
-        gaussian_kernel_size += 1
-    print(gaussian_kernel_size)
-    
-    data_transforms = transforms.Compose([
-        transforms.RandomResizedCrop(size=size),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomApply([color_jitter], p=0.8),
-        transforms.RandomGrayscale(p=0.2),
-        transforms.GaussianBlur(kernel_size=gaussian_kernel_size),
-    ])
-    return data_transforms
-
-class SimClrProjectionHead(nn.Module):
-    '''
-    
-    From the paper:
-    We use ResNet-50 as the base encoder network, and a 2-layer MLP projection 
-    head to project the representation to a 128-dimensional latent space
-    
-    '''
-    def __init__(self, mlp_dim, output_dim=128):
-        
-        super().__init__()
-        self.mlp_dim = mlp_dim
-        self.output_dim = output_dim
-        self.projection_head = nn.Sequential(
-            nn.Linear(self.mlp_dim, self.mlp_dim),
-            nn.BatchNorm1d(self.mlp_dim),
-            nn.ReLU(),
-            nn.Linear(self.mlp_dim, self.output_dim)
-        )
-        
-    def forward(self, x):
-        return self.projection_head(x)
-
-class SimClrModel(nn.Module):
-    
-    def __init__(self, backbone):
-        
-        super().__init__()
-        self.backbone = backbone
-        self.projection_head = SimClrProjectionHead(self.backbone.fc.out_features)
-        
-    def forward(self, x):
-        h = self.backbone(x)
-        return self.projection_head(h)
-
-class NAIP_CPB_Contrastive_Dataset(Dataset):
-    
-    def __init__(self, file_list, n_views=2, image_size=224):
-        
-        self.file_list = file_list
-        self.transform = get_simclr_pipeline_transform(image_size)
-        self.n_views = n_views
-    
-    def __len__(self):
-        return len(self.file_list)
-
-    def _generate_views(self, x):
-        # create n_views augmented versions of the same image
-        return [self.transform(x) for _ in range(self.n_views)]
-    
-    def __getitem__(self, index):
-        with rasterio.open(self.file_list[index][0]) as src:
-            raster = torch.tensor(src.read([4, 1, 2])) / 255. # normalize to [0,1]
-        
-        views = self._generate_views(raster)
-        return views
-
-def get_list_of_files(data_path: str='./data') -> list[tuple[str, str]]:
-    '''Returns a list of tuples of the form (path_to_input_sample, path_to_label)
-    
-    Parameters:
-    data_path (str): path to the root of the data directory
-    
-    Returns:
-    list[tuple[str, str]]: List of file paths with corresponding ground truth labels
-    '''
-    
-    # get list of patch ids. list comprehension pretty much says "look at the 
-    # items in the data_path directory and if they are directories, add them to 
-    # the list"
-    file_paths = []
-    patch_ids = [sub_dir for sub_dir in os.listdir(data_path) if os.path.isdir(os.path.join(data_path, sub_dir))]
-    
-    for patch in patch_ids:
-        # get all subsamples of each patch
-        subsamples = os.listdir(os.path.join(data_path, patch, 'input'))
-        # add subsamples to file_path list
-        file_paths.extend(
-            (
-                os.path.join(data_path, patch, 'input', subsample),
-                os.path.join(data_path, patch, 'target', subsample)
-            ) for subsample in subsamples if subsample.endswith('.tif')
-        )
-        
-    
-    # check to make sure files exist
-    for file_path in file_paths:
-        if not os.path.isfile(file_path[0]): # if source file doesn't exist
-            raise FileNotFoundError(f'Input file {file_path[0]} not found')
-        if not os.path.isfile(file_path[1]): # if label file doesn't exist
-            raise FileNotFoundError(f'Label file {file_path[1]} not found')
-    
-    return file_paths
-
-test_dataset = NAIP_CPB_Contrastive_Dataset(get_list_of_files('prelim_2_subset_data_cpblulc'))
-
-model = SimClrModel(timm.create_model('resnet18', pretrained=False))
-
-train_loader = DataLoader(
-    test_dataset,
-    batch_size=8,
-    shuffle=True,
+run = wandb.init(
+    project='SimCLR_CPB_test_1',
+    config={
+        'epochs': EPOCHS,
+        'learning_rate': LEARNING_RATE,
+        'loader_batch_size': LOADER_BATCH_SIZE,
+        'grad_cache_steps': GRAD_CACHE_STEPS,
+        'batch size': LOADER_BATCH_SIZE * GRAD_CACHE_STEPS,
+        'patience': PATIENCE,
+        'temprature': TEMPRATURE,
+        'warmup_epochs': WARMUP_EPOCHS
+    }
 )
 
-TEMPRATURE = 0.5
-loss_fn = NTXentLoss(temperature=TEMPRATURE)
-loss_fn = SelfSupervisedLoss(loss_fn)
+print(f'Acutal batch size: {LOADER_BATCH_SIZE * GRAD_CACHE_STEPS}')
 
-for X1, X2 in train_loader:
-    print(X1.shape, X2.shape)
-    z1, z2 = model(X1), model(X2)
-    print(z1.shape, z2.shape)
-    loss = loss_fn(z1, z2)
-    print(loss.item())
-    break
+list_of_files = utils.get_list_of_files('prelim_2_subset_data_cpblulc')
+shuffle(list_of_files)
+n_train_samples = int(TRAIN_SPLIT * len(list_of_files))
+train_files = list_of_files[:n_train_samples]
+val_files = list_of_files[n_train_samples:]
+train_dataset = utils.NAIP_CPB_Contrastive_Dataset(train_files, image_size=96)
+val_dataset = utils.NAIP_CPB_Contrastive_Dataset(val_files, image_size=96)
 
-def visualize_transformations(X1, X2, title=None):
+model = utils.SimClrModel(timm.create_model('resnet18', pretrained=False, num_classes=2048))
+print(model)
+
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=LOADER_BATCH_SIZE,
+    shuffle=True,
+    drop_last=True
+)
+val_loader = DataLoader(
+    val_dataset,
+    batch_size=LOADER_BATCH_SIZE,
+    shuffle=False,
+    drop_last=True
+)
+
+print(
+    f'training Dataset samples {len(train_dataset)}\ntraining DataLoader batches {len(train_loader)}\n'
+)
+
+loss_fn = utils.NT_Xent_Loss(TEMPRATURE)
+optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+warmump_scheduler = torch.optim.lr_scheduler.LambdaLR(
+    optimizer=optimizer, 
+    lr_lambda=lambda x: x * 0.1 if x < WARMUP_EPOCHS else 1,
+    verbose=True
+)
+
+device = torch.device('mps') if torch.backends.mps.is_available() else torch.device('cpu')
+print(f'Using device {device}')
+loss_fn = loss_fn.to(device)
+model = model.to(device)
+
+train_history = []
+val_history = []
+best_val_loss = float('inf')
+best_epoch = 0
+
+for epoch in range(EPOCHS):
     
-    X1 = X1.numpy()
-    X2 = X2.numpy()
+    # create cache for model output embeddings
+    cache_z1, cache_z2 = [], []
     
-    X1 = X1.transpose(1, 2, 0) # convert from (bands, rows, cols) to (rows, cols, bands)
-    X2 = X2.transpose(1, 2, 0)
+    model.train()
+    tqdm_train_loader = tqdm(train_loader, desc=f'Epoch {epoch+1}/{EPOCHS} train', unit='batch')
+    train_epoch_loss = 0.0
+    for step, (X1, X2) in enumerate(tqdm_train_loader):
+        X1, X2 = X1.to(device), X2.to(device)
+        z1, z2 = model(X1), model(X2)
+        
+        # cache z1 and z2 for computing loss (must be computed over entire batch)
+        cache_z1.append(z1)
+        cache_z2.append(z2)
+        
+        # compute loss every GRAD_CACHE_STEPS
+        if (step + 1) % GRAD_CACHE_STEPS == 0:
+            z1, z2 = torch.cat(cache_z1, dim=0), torch.cat(cache_z2, dim=0)
+            loss = loss_fn(z1, z2)
+            loss.backward()
+            
+            optimizer.step()
+            optimizer.zero_grad()
+
+            tqdm_train_loader.set_postfix({'loss': loss.item() / (GRAD_CACHE_STEPS * LOADER_BATCH_SIZE)})
+            wandb.log({'train batch loss': loss.item()})
+            train_epoch_loss += loss.item()
+            cache_z1, cache_z2 = [], []
+    train_epoch_loss /= (len(train_loader) * LOADER_BATCH_SIZE)
+    wandb.log({'train epoch loss': train_epoch_loss})
     
-    # create plt figure
-    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    cache_z1, cache_z2 = [], []
+    tqdm_val_loader = tqdm(val_loader, desc=f'Epoch {epoch+1}/{EPOCHS} val', unit='batch')
+    val_epoch_loss = 0.0
+    for step, (X1, X2) in enumerate(tqdm_val_loader):
+        X1, X2 = X1.to(device), X2.to(device)
+        z1, z2 = model(X1), model(X2)
+        
+        # cache z1 and z2 for computing loss (must be computed over entire batch)
+        cache_z1.append(z1)
+        cache_z2.append(z2)
+        
+        # compute loss every GRAD_CACHE_STEPS
+        if (step + 1) % GRAD_CACHE_STEPS == 0:
+            z1, z2 = torch.cat(cache_z1, dim=0), torch.cat(cache_z2, dim=0)
+            val_loss = loss_fn(z1, z2)
+            tqdm_val_loader.set_postfix({'val loss': val_loss.item() / (GRAD_CACHE_STEPS * LOADER_BATCH_SIZE)})
+            wandb.log({'val batch loss': val_loss.item()})
+            val_epoch_loss += val_loss.item()
+            cache_z1, cache_z2 = [], []
     
-    # plot RGB image
-    ax[0].imshow(X1, vmin=0, vmax=255)
-    ax[0].set_title('X1')
-    ax[0].axis('off')
+    val_epoch_loss /= (len(val_loader) * LOADER_BATCH_SIZE)
+    wandb.log({'val epoch loss': val_epoch_loss})
     
-    # plot CIR image
-    ax[1].imshow(X2, vmin=0, vmax=255)
-    ax[1].set_title('X2')
-    ax[1].axis('off')
+    if val_epoch_loss < best_val_loss:
+        best_val_loss = val_epoch_loss
+        best_epoch = epoch
+        torch.save(model.state_dict(), 'best_model.pth')
     
-    if title is not None:
-        fig.suptitle(title)
+    if epoch - best_epoch > PATIENCE:
+        print(f'Early stopping at epoch {epoch+1}')
+        break
     
-    fig.tight_layout() # formatting
-    plt.show()
+    cache_z1, cache_z2 = [], []
+    
+    warmump_scheduler.step()
